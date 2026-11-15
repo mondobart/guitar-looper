@@ -124,10 +124,12 @@
     <details id="setup">
       <summary>Mic &amp; timing setup</summary>
       <div class="row"><label>Input level</label><div class="meter" id="meter"><div></div></div></div>
-      <div class="row"><label>Input gain</label><input type="range" id="inGain" min="0" max="400" value="100"><span class="val" id="inGainVal">100%</span></div>
+      <div class="row"><label>Input gain</label><input type="range" id="inGain" min="0" max="1500" value="100"><span class="val" id="inGainVal">100%</span></div>
       <div class="row"><label>Latency fix</label><input type="range" id="latency" min="0" max="400" value="0"><span class="val" id="latencyVal">0 ms</span></div>
       <div class="btnrow"><button id="calBtn">Auto-calibrate latency</button></div>
       <div class="tips" style="margin-top:6px">To auto-calibrate, unplug your headphones and turn the volume up. You'll hear six clicks, and the looper times how long they take to come back through the mic. If your loops still sound late compared with the drums, nudge the slider up. If they sound early, nudge it down.</div>
+      <div class="row"><span class="toggle"><input type="checkbox" id="autoLevel"> <label for="autoLevel" style="min-width:0;color:var(--text)">Auto-level each layer (boosts quiet recordings)</label></span></div>
+      <div class="row"><span class="toggle"><input type="checkbox" id="agc"> <label for="agc" style="min-width:0;color:var(--text)">Tablet/phone mic boost (lets the device level the mic itself)</label></span></div>
       <div class="row"><span class="toggle"><input type="checkbox" id="monitor"> <label for="monitor" style="min-width:0;color:var(--text)">Hear mic through headphones (for a pickup or interface)</label></span></div>
       <div class="tips">
         <b>Keys / pedal:</b> Space, Enter, → or Page Down = Record/Overdub · P = Play/Stop · ←, Page Up or Backspace = Undo. Most Bluetooth page-turner pedals work as a foot switch.<br>
@@ -153,7 +155,7 @@ const PATTERNS = {
 };
 
 // ---------- settings ----------
-const S = {bpm:90, pattern:'rock', swing:0, drumVol:0.8, bars:2, countIn:true, keep:false, latency:null, inGain:1, monitor:false};
+const S = {bpm:90, pattern:'rock', swing:0, drumVol:0.8, bars:2, countIn:true, keep:false, latency:null, inGain:1, monitor:false, autoLevel:true, agc:false};
 try{ Object.assign(S, JSON.parse(localStorage.getItem('looperSettings')||'{}')); }catch(e){}
 function save(){ try{ localStorage.setItem('looperSettings', JSON.stringify(S)); }catch(e){} }
 
@@ -181,17 +183,13 @@ async function initAudio(){
   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
     msg('This browser won\'t give the page microphone access. Open it in Chrome, Edge or Firefox on a computer, or serve it over https.'); return false;
   }
-  let stream;
-  try{
-    stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
-  }catch(e){ msg('Microphone access was blocked. Allow the mic for this page and try again.'); return false; }
   ctx = new (window.AudioContext||window.webkitAudioContext)({latencyHint:'interactive'});
+  inputGain=ctx.createGain(); inputGain.gain.value=S.inGain;
+  if(!(await openMic())){ try{ctx.close();}catch(e){} ctx=null; return false; }
   master=ctx.createGain(); master.connect(ctx.destination);
   drumBus=ctx.createGain(); drumBus.gain.value=S.drumVol; drumBus.connect(master);
   loopBus=ctx.createGain(); loopBus.connect(master);
   noiseBuf=makeNoise(ctx);
-  const src=ctx.createMediaStreamSource(stream);
-  inputGain=ctx.createGain(); inputGain.gain.value=S.inGain; src.connect(inputGain);
   monitorGain=ctx.createGain(); monitorGain.gain.value=S.monitor?1:0; inputGain.connect(monitorGain); monitorGain.connect(master);
   try{
     const url=URL.createObjectURL(new Blob([WORKLET],{type:'application/javascript'}));
@@ -210,6 +208,18 @@ async function initAudio(){
   if(S.latency==null){ S.latency=Math.round(((ctx.baseLatency||0)+(ctx.outputLatency||0))*1000+15); save(); }
   syncUI();
   msg('');
+  return true;
+}
+
+let micStream=null, micSrc=null;
+async function openMic(){
+  let stream;
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:!!S.agc,channelCount:1}});
+  }catch(e){ msg('Microphone access was blocked. Allow the mic for this page and try again.'); return false; }
+  if(micSrc) try{micSrc.disconnect();}catch(e){}
+  if(micStream) micStream.getTracks().forEach(t=>t.stop());
+  micStream=stream; micSrc=ctx.createMediaStreamSource(stream); micSrc.connect(inputGain);
   return true;
 }
 
@@ -310,6 +320,8 @@ function finishRec(p,stopping){
   pending=null;
   const d=p.buf, fade=Math.round(ctx.sampleRate*0.002);
   for(let i=0;i<fade;i++){ const g=i/fade; d[i]*=g; d[d.length-1-i]*=g; }
+  if(S.autoLevel){ let pk=0; for(let i=0;i<d.length;i++){const a=Math.abs(d[i]); if(a>pk)pk=a;}
+    if(pk>0.0005){ const k=Math.min(0.7/pk,30); for(let i=0;i<d.length;i++) d[i]*=k; } }
   const buf=ctx.createBuffer(1,d.length,ctx.sampleRate); buf.copyToChannel(d,0);
   const g=ctx.createGain(); g.connect(loopBus);
   const l={buf,gain:g,vol:1,muted:false,src:null}; layers.push(l);
@@ -432,7 +444,7 @@ function syncUI(){
   sel.value=S.pattern; $('bpm').value=S.bpm; $('bpmVal').textContent=S.bpm;
   $('swing').value=S.swing; $('swingVal').textContent=S.swing+'%';
   $('drumVol').value=Math.round(S.drumVol*100); $('drumVolVal').textContent=Math.round(S.drumVol*100)+'%';
-  $('countIn').checked=S.countIn; $('keep').checked=S.keep; $('bars').value=S.bars; $('monitor').checked=S.monitor;
+  $('countIn').checked=S.countIn; $('keep').checked=S.keep; $('bars').value=S.bars; $('monitor').checked=S.monitor; $('autoLevel').checked=S.autoLevel; $('agc').checked=S.agc;
   $('inGain').value=Math.round(S.inGain*100); $('inGainVal').textContent=Math.round(S.inGain*100)+'%';
   $('latency').value=S.latency||0; $('latencyVal').textContent=(S.latency||0)+' ms';
   const lk=locked();
@@ -522,6 +534,8 @@ $('bars').onchange=e=>{ S.bars=+e.target.value; save(); };
 $('inGain').oninput=e=>{ S.inGain=e.target.value/100; if(inputGain) inputGain.gain.value=S.inGain; save(); syncUI(); };
 $('latency').oninput=e=>{ S.latency=+e.target.value; save(); syncUI(); };
 $('monitor').onchange=e=>{ S.monitor=e.target.checked; if(monitorGain) monitorGain.gain.value=S.monitor?1:0; save(); };
+$('autoLevel').onchange=e=>{ S.autoLevel=e.target.checked; save(); };
+$('agc').onchange=async e=>{ S.agc=e.target.checked; save(); if(ctx) await openMic(); };
 document.addEventListener('keydown',e=>{
   if(e.target.tagName==='SELECT'||(e.target.tagName==='INPUT'&&e.target.type!=='checkbox'&&e.target.type!=='range')) return;
   const k=e.key;
