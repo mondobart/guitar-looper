@@ -400,10 +400,10 @@ function shiftLayers(ms){
 async function calibrate(strum){
   if(!(await initAudio())) return;
   if(running) stopAll();
-  const n=strum?8:6, gap=strum?0.6:0.45, first=strum?2.4:0.6;
+  const n=strum?8:6, gap=strum?0.6:0.45, first=strum?3.0:0.6;
   const sr=ctx.sampleRate, t0=ctx.currentTime+0.1, dur=first+n*gap+0.6;
   const clicks=[];
-  if(strum){ for(let i=0;i<4;i++) playVoice(ctx,master,noiseBuf,i===0?'clickA':'click',t0+0.6+i*gap*0.5*1,0.6); }
+  if(strum){ for(let i=0;i<4;i++) playVoice(ctx,master,noiseBuf,'click',t0+first-(4-i)*gap,0.5); }
   for(let i=0;i<n;i++){ const t=t0+first+i*gap; clicks.push(t); playVoice(ctx,master,noiseBuf,strum?'clickA':'calclick',t,1); }
   cal={f0:Math.round(t0*sr), buf:new Float32Array(Math.round(dur*sr)), strum, first};
   const btnId=strum?'strumBtn':'calBtn', label=$(btnId).textContent;
