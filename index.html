@@ -59,6 +59,19 @@
   .empty{color:var(--muted);font-size:14px}
   .btnrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
   .btnrow button{flex:1;font-size:14px}
+  .pads{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;user-select:none;-webkit-user-select:none}
+  .pad{height:72px;font-size:14px;font-weight:600;border-radius:14px;touch-action:none;transition:transform .05s,filter .05s}
+  .pad.hit{transform:scale(.94);filter:brightness(1.6)}
+  .pad-k{background:#5a2f25}.pad-s{background:#5a4325}.pad-c{background:#55502a}.pad-t{background:#3f4f2a}
+  .pad-h{background:#2a4a45}.pad-oh{background:#2a3c55}.pad-r{background:#3f2f55}.pad-sh{background:#552f4a}
+  #beatRecBtn.recon{background:var(--rec);border-color:#f06a5a}
+  .grid{display:flex;flex-direction:column;gap:3px;overflow-x:auto}
+  .grow{display:flex;align-items:center;gap:2px}
+  .glab{min-width:62px;font-size:11px;color:var(--muted)}
+  .gcell{flex:1;min-width:14px;height:20px;padding:0;border-radius:4px;background:#332a24;border:1px solid #3f352d}
+  .gcell.gbeat{border-color:#5a4c40}
+  .gcell.on{background:var(--accent);border-color:var(--accent)}
+  .gcell.cur{box-shadow:inset 0 0 0 2px #fff6}
   .meter{flex:1;height:10px;border-radius:5px;background:#3a312a;overflow:hidden}
   .meter > div{height:100%;width:0;background:linear-gradient(90deg,var(--play),var(--accent) 70%,var(--rec))}
   #msg{font-size:14px;color:#ffd08a;min-height:0;margin:0 0 10px}
@@ -105,6 +118,14 @@
     <div class="row"><label>Drum volume</label><input type="range" id="drumVol" min="0" max="100" value="80"><span class="val" id="drumVolVal">80%</span></div>
     <div class="row"><span class="toggle"><input type="checkbox" id="countIn" checked> <label for="countIn" style="min-width:0;color:var(--text)">One-bar count-in</label></span></div>
     <div id="lockNote" class="tips" style="display:none">Tempo and loop length are locked while you have loops. Use Clear all to change them.</div>
+  </div>
+
+  <div class="card">
+    <h2>Drum pads</h2>
+    <div class="pads" id="pads"></div>
+    <div class="btnrow"><button id="beatRecBtn">● Record my beat</button><button id="beatClearBtn">Clear beat</button></div>
+    <div class="tips" style="margin:8px 0">Tap the pads to play along. <b>Record my beat</b> loops one bar with a click. Anything you tap is snapped to the nearest sixteenth note and added to <b>My beat</b> in the drum list, so you can build it up a part at a time. Tap squares in the grid to add or remove hits.</div>
+    <div class="grid" id="grid"></div>
   </div>
 
   <div class="card">
@@ -184,16 +205,22 @@ const PATTERNS = {
 // ---------- settings ----------
 const S = {bpm:90, pattern:'rock', swing:0, drumVol:0.8, bars:2, countIn:true, keep:false, latency:null, inGain:1, monitor:false, autoLevel:true, agc:false, echoDiv:'0.75', echoFb:0.35};
 try{ Object.assign(S, JSON.parse(localStorage.getItem('looperSettings')||'{}')); }catch(e){}
+const VOICES=[['k','Kick'],['s','Snare'],['c','Clap'],['t','Tom'],['h','Hi-hat'],['oh','Open hat'],['r','Rim'],['sh','Shaker']];
+if(!S.custom||typeof S.custom!=='object') S.custom={};
+for(const [v] of VOICES){ if(typeof S.custom[v]!=='string'||S.custom[v].length!==16) S.custom[v]='................'; }
+PATTERNS.custom={name:'My beat (from the pads)', beats:4, get v(){ return S.custom; }};
 function save(){ try{ localStorage.setItem('looperSettings', JSON.stringify(S)); }catch(e){} }
 
 // ---------- audio state ----------
 let fx, limiter, ctx, master, drumBus, loopBus, inputGain, monitorGain, noiseBuf, recNode;
 let running=false, barTime=0, nextStepTime=0, step=0, schedTimer=null, countInEnd=0;
+let lastClipMsg=0, beatRec=false; const lastTap={};
 let L=0, origin=0, layers=[], pending=null, cal=null, meterLevel=0;
 
 const beatDur=()=>60/S.bpm, beats=()=>PATTERNS[S.pattern].beats, barDur=()=>beats()*beatDur();
 const stepDur=()=>beatDur()/4, stepsPerBar=()=>beats()*4;
 const mod=(a,b)=>((a%b)+b)%b;
+const DRUM_TRIM=0.6;
 const $=id=>document.getElementById(id);
 function msg(t){ $('msg').textContent=t||''; }
 
@@ -213,12 +240,16 @@ async function initAudio(){
   ctx = new (window.AudioContext||window.webkitAudioContext)({latencyHint:'interactive'});
   inputGain=ctx.createGain(); inputGain.gain.value=S.inGain;
   if(!(await openMic())){ try{ctx.close();}catch(e){} ctx=null; return false; }
-  master=ctx.createGain();
-  limiter=ctx.createDynamicsCompressor(); limiter.threshold.value=-2; limiter.knee.value=0; limiter.ratio.value=20; limiter.attack.value=0.002; limiter.release.value=0.15;
-  master.connect(limiter); limiter.connect(ctx.destination);
+  master=ctx.createGain(); master.gain.value=0.8;
+  limiter=ctx.createDynamicsCompressor(); limiter.threshold.value=-8; limiter.knee.value=2; limiter.ratio.value=20; limiter.attack.value=0.001; limiter.release.value=0.2;
+  const pre=ctx.createGain(); pre.gain.value=0.5;
+  const clip=ctx.createWaveShaper(); const cv=new Float32Array(2049);
+  for(let i=0;i<cv.length;i++){ const u=i/1024-1; cv[i]=Math.tanh(2*u); }
+  clip.curve=cv; clip.oversample='2x';
+  master.connect(limiter); limiter.connect(pre); pre.connect(clip); clip.connect(ctx.destination);
   fx=buildFx(ctx,master);
-  drumBus=ctx.createGain(); drumBus.gain.value=S.drumVol; drumBus.connect(master);
-  loopBus=ctx.createGain(); loopBus.connect(master);
+  drumBus=ctx.createGain(); drumBus.gain.value=S.drumVol*DRUM_TRIM; drumBus.connect(master);
+  loopBus=ctx.createGain(); loopBus.gain.value=0.75; loopBus.connect(master);
   noiseBuf=makeNoise(ctx);
   monitorGain=ctx.createGain(); monitorGain.gain.value=S.monitor?1:0; inputGain.connect(monitorGain); monitorGain.connect(master);
   try{
@@ -277,7 +308,7 @@ function makeChain(c,l,bus){
   const ch={input,dry,wet,out,es,rs}; applyFx(ch,l); return ch;
 }
 function applyFx(ch,l){
-  ch.dry.gain.value=1-l.sustain; ch.wet.gain.value=l.sustain*2.5;
+  ch.dry.gain.value=1-l.sustain; ch.wet.gain.value=l.sustain*1.6;
   ch.out.gain.value=l.muted?0:l.vol; ch.es.gain.value=l.echo*0.8; ch.rs.gain.value=l.reverb*0.9;
 }
 function updateEcho(){ if(fx){ fx.delay.delayTime.setTargetAtTime(echoTime(),ctx.currentTime,0.05); fx.fb.gain.value=S.echoFb; } }
@@ -299,6 +330,18 @@ function playVoice(c,out,nb,type,t,v){
     o.frequency.setValueAtTime(200,t); o.frequency.exponentialRampToValueAtTime(140,t+0.08);
     g2.gain.setValueAtTime(0.45*v,t); g2.gain.exponentialRampToValueAtTime(0.001,t+0.1);
     o.connect(g2); g2.connect(out); o.start(t); o.stop(t+0.12);
+  } else if(type==='oh'){
+    const n=noise(), f=filt('highpass',6500); n.connect(f); f.connect(g);
+    g.gain.setValueAtTime(0.18*v,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.35); n.start(t,Math.random()*0.5); n.stop(t+0.36);
+  } else if(type==='t'){
+    const o=c.createOscillator(); o.frequency.setValueAtTime(170,t); o.frequency.exponentialRampToValueAtTime(95,t+0.25);
+    g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(0.8*v,t+0.005); g.gain.exponentialRampToValueAtTime(0.001,t+0.4);
+    o.connect(g); o.start(t); o.stop(t+0.42);
+  } else if(type==='c'){
+    const n=noise(), f=filt('bandpass',1300,1.2); n.connect(f); f.connect(g);
+    g.gain.setValueAtTime(0.0001,t);
+    for(const o of [0,0.011,0.022]){ g.gain.setValueAtTime(0.7*v,t+o); g.gain.exponentialRampToValueAtTime(0.08*v,t+o+0.009); }
+    g.gain.setValueAtTime(0.5*v,t+0.033); g.gain.exponentialRampToValueAtTime(0.001,t+0.2); n.start(t,Math.random()*0.5); n.stop(t+0.22);
   } else if(type==='h'){
     const n=noise(), f=filt('highpass',7000); n.connect(f); f.connect(g);
     g.gain.setValueAtTime(0.2*v,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.05); n.start(t,Math.random()*0.5); n.stop(t+0.06);
@@ -333,7 +376,10 @@ function scheduler(){
   while(nextStepTime<ahead){
     if(step===0) barTime=nextStepTime;
     const inCount = nextStepTime < countInEnd-1e-4;
-    for(const [k,v,sw] of stepHits(step,inCount)) playVoice(ctx,drumBus,noiseBuf,k,nextStepTime+sw,v);
+    for(const [k,v,sw] of stepHits(step,inCount)){
+      const tt=nextStepTime+sw; if(lastTap[k]!=null && tt-lastTap[k]>-0.01 && tt-lastTap[k]<0.12) continue;
+      playVoice(ctx,drumBus,noiseBuf,k,tt,v); }
+    if(beatRec && step%4===0) playVoice(ctx,drumBus,noiseBuf,step===0?'clickA':'click',nextStepTime,0.5);
     nextStepTime+=stepDur(); step=(step+1)%stepsPerBar();
   }
 }
@@ -343,7 +389,7 @@ function startTransport(when){
   requestWake();
 }
 function stopAll(){
-  running=false; clearInterval(schedTimer); countInEnd=0;
+  running=false; beatRec=false; clearInterval(schedTimer); countInEnd=0;
   for(const l of layers){ try{l.src&&l.src.stop();}catch(e){} l.src=null; }
   if(pending){ if(pending.started) finishRec(pending,true); else pending=null; }
   releaseWake(); syncUI();
@@ -362,6 +408,8 @@ function arm(start, first){
 function onChunk(frame,data){
   let pk=0; for(let i=0;i<data.length;i+=4){const a=Math.abs(data[i]); if(a>pk)pk=a;}
   meterLevel=Math.max(pk,meterLevel*0.92);
+  if(pk>0.97 && pending && pending.started){ const t=performance.now(); if(t-lastClipMsg>4000){ lastClipMsg=t;
+    msg('Your recording is clipping, which distorts it. Turn the Input gain down a little'+(S.agc?', or switch off Tablet/phone mic boost':'')+'.'); } }
   if(cal) calFeed(frame,data);
   feedRec(frame,data);
 }
@@ -380,7 +428,7 @@ function finishRec(p,stopping){
   const d=p.buf, fade=Math.round(ctx.sampleRate*0.002);
   for(let i=0;i<fade;i++){ const g=i/fade; d[i]*=g; d[d.length-1-i]*=g; }
   if(S.autoLevel){ let pk=0; for(let i=0;i<d.length;i++){const a=Math.abs(d[i]); if(a>pk)pk=a;}
-    if(pk>0.0005){ const k=Math.min(0.7/pk,30); for(let i=0;i<d.length;i++) d[i]*=k; } }
+    if(pk>0.0005){ const k=Math.min(0.5/pk,30); for(let i=0;i<d.length;i++) d[i]*=k; } }
   const buf=ctx.createBuffer(1,d.length,ctx.sampleRate); buf.copyToChannel(d,0);
   const l={buf,vol:1,muted:false,src:null,echo:0,sustain:0,reverb:0};
   l.ch=makeChain(ctx,l,{loop:loopBus,echoIn:fx.echoIn,revIn:fx.revIn}); layers.push(l);
@@ -447,6 +495,49 @@ function shiftLayers(ms){
   syncUI();
 }
 
+// ---------- drum pads ----------
+function setHit(v,i,on){ const a=S.custom[v].split(''); a[i]=on?'x':'.'; S.custom[v]=a.join(''); save(); }
+async function padHit(v,el){
+  if(!(await initAudio())) return;
+  const now=ctx.currentTime;
+  playVoice(ctx,drumBus,noiseBuf,v,now,1);
+  if(el){ el.classList.add('hit'); setTimeout(()=>el.classList.remove('hit'),110); }
+  if(beatRec && running){
+    const heard=now-(S.latency||0)/1000;
+    const i=Math.round(mod(heard-barTime,barDur())/stepDur())%16;
+    setHit(v,i,true); lastTap[v]=now; renderGrid();
+  }
+}
+async function toggleBeatRec(){
+  if(beatRec){ beatRec=false; syncUI(); return; }
+  if(!(await initAudio())) return;
+  if(locked() && PATTERNS.custom.beats!==beats()){ msg('Your loop is in 3/4, but My beat is a 4/4 pattern. Clear the loop first to record a beat.'); return; }
+  S.pattern='custom'; S.swing=S.swing||0; save();
+  if(!running){ const when=ctx.currentTime+0.1; startTransport(when); countInEnd=when+barDur(); if(layers.length){ origin=when; for(const l of layers) startLayer(l,when); } }
+  beatRec=true; msg(''); syncUI();
+}
+function clearBeat(){ for(const [v] of VOICES) S.custom[v]='................'; save(); renderGrid(); }
+let gridCells={}, curCol=-1;
+function renderGrid(){
+  const g=$('grid');
+  if(!g.childElementCount){
+    for(const [v,name] of VOICES){
+      const row=document.createElement('div'); row.className='grow';
+      const lab=document.createElement('span'); lab.className='glab'; lab.textContent=name; row.appendChild(lab);
+      gridCells[v]=[];
+      for(let i=0;i<16;i++){ const c=document.createElement('button'); c.className='gcell'+(i%4===0?' gbeat':'');
+        c.onclick=()=>{ setHit(v,i,S.custom[v][i]==='.'); renderGrid(); c.blur(); }; row.appendChild(c); gridCells[v].push(c); }
+      g.appendChild(row);
+    }
+  }
+  for(const [v] of VOICES) gridCells[v].forEach((c,i)=>c.classList.toggle('on',S.custom[v][i]!=='.'));
+}
+function buildPads(){
+  const p=$('pads');
+  for(const [v,name] of VOICES){ const b=document.createElement('button'); b.className='pad pad-'+v; b.textContent=name;
+    b.addEventListener('pointerdown',e=>{ e.preventDefault(); padHit(v,b); }); p.appendChild(b); }
+}
+
 // ---------- latency calibration ----------
 async function calibrate(strum){
   if(!(await initAudio())) return;
@@ -490,7 +581,7 @@ async function exportLoop(withDrums){
   for(const l of layers){ if(l.muted) continue; const s=oc.createBufferSource(); s.buffer=l.buf; s.loop=true;
     const ch=makeChain(oc,l,{loop:oc.destination,echoIn:bus.echoIn,revIn:bus.revIn}); s.connect(ch.input); s.start(0); }
   if(withDrums){
-    const db=oc.createGain(); db.gain.value=S.drumVol; db.connect(oc.destination);
+    const db=oc.createGain(); db.gain.value=S.drumVol*DRUM_TRIM; db.connect(oc.destination);
     const nb=makeNoise(oc), n=Math.round(2*L/stepDur());
     for(let i=0;i<n;i++) for(const [k,v,sw] of stepHits(i%stepsPerBar(),false)){ const t=i*stepDur()+sw; if(t<2*L) playVoice(oc,db,nb,k,t,v); }
   }
@@ -544,6 +635,7 @@ function syncUI(){
   rb.textContent = pending ? (pending.started ? (layers.length||!pending.first?'■ Stop overdub':'■ Stop recording') : 'Cancel') : (layers.length?'● Overdub':'● Record');
   if(pending && pending.started && pending.first) rb.textContent='Recording…';
   renderBeats();
+  const br=$('beatRecBtn'); br.textContent=beatRec?'■ Stop recording beat':'● Record my beat'; br.classList.toggle('recon',beatRec);
 }
 let beatEls=[];
 function renderBeats(){
@@ -585,6 +677,8 @@ function frame(){
     const bd=barDur(), pos=mod(now-barTime,bd), b=Math.floor(pos/beatDur());
     beatEls.forEach((e,i)=>e.classList.toggle('on', i===b && pos-b*beatDur()<beatDur()*0.5 && now>=barTime-bd));
   } else beatEls.forEach(e=>e.classList.remove('on'));
+  const col = (running && S.pattern==='custom' && now>=0) ? Math.floor(mod(now-barTime,barDur())/stepDur())%16 : -1;
+  if(col!==curCol){ for(const [v] of VOICES){ if(curCol>=0) gridCells[v][curCol].classList.remove('cur'); if(col>=0) gridCells[v][col].classList.add('cur'); } curCol=col; }
   let prog=0;
   if(L && running && now>=origin) prog=mod(now-origin,L)/L;
   pb.firstElementChild.style.width=(prog*100)+'%';
@@ -621,7 +715,7 @@ btn('tapBtn',()=>{ const t=performance.now(); taps=taps.filter(x=>t-x<2500); tap
   if(taps.length>=2){ const iv=(taps[taps.length-1]-taps[0])/(taps.length-1); setBpm(60000/iv); } if(taps.length>6) taps.shift(); });
 sel.onchange=e=>{ S.pattern=e.target.value; S.swing=PATTERNS[S.pattern].swing||0; if(running) step=step%stepsPerBar(); save(); syncUI(); };
 $('swing').oninput=e=>{ S.swing=+e.target.value; save(); syncUI(); };
-$('drumVol').oninput=e=>{ S.drumVol=e.target.value/100; if(drumBus) drumBus.gain.value=S.drumVol; save(); syncUI(); };
+$('drumVol').oninput=e=>{ S.drumVol=e.target.value/100; if(drumBus) drumBus.gain.value=S.drumVol*DRUM_TRIM; save(); syncUI(); };
 $('countIn').onchange=e=>{ S.countIn=e.target.checked; save(); };
 $('keep').onchange=e=>{ S.keep=e.target.checked; save(); };
 $('bars').onchange=e=>{ S.bars=+e.target.value; save(); };
@@ -644,6 +738,8 @@ document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==
 if(S.latency==null) S.latency=0;
 const savedLatency=localStorage.getItem && (()=>{try{return JSON.parse(localStorage.getItem('looperSettings')||'{}').latency}catch(e){return null}})();
 if(savedLatency==null) S.latency=null;
+buildPads(); renderGrid();
+btn('beatRecBtn',toggleBeatRec); btn('beatClearBtn',clearBeat);
 syncUI(); renderLayers(); requestAnimationFrame(frame);
 </script>
 </body>
