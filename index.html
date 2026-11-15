@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guitar Looper</title>
+<style>
+  :root{
+    --bg:#1b1714; --card:#26201b; --line:#3a312a; --text:#f3ebe2; --muted:#a8998a;
+    --accent:#e0a458; --rec:#e0503f; --play:#5fb37a; --od:#e08a3f;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;-webkit-tap-highlight-color:transparent}
+  main{max-width:640px;margin:0 auto;padding:16px 14px 60px}
+  h1{font-size:22px;margin:4px 0 2px;letter-spacing:.3px}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
+  .card h2{font-size:13px;text-transform:uppercase;letter-spacing:1.2px;color:var(--muted);margin:0 0 10px;font-weight:600}
+  #status{font-size:20px;font-weight:600;min-height:28px}
+  #substatus{color:var(--muted);font-size:13px;min-height:18px;margin-top:2px}
+  .beats{display:flex;gap:8px;margin:12px 0 10px}
+  .beat{flex:1;height:14px;border-radius:7px;background:#3a312a;transition:background .05s}
+  .beat.on{background:var(--accent)}
+  .beat.on.first{background:#ffd08a}
+  .progress{height:10px;border-radius:5px;background:#3a312a;overflow:hidden;position:relative}
+  .progress > div{height:100%;width:0;background:var(--play)}
+  .progress.rec > div{background:var(--rec)}
+  .transport{display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px;margin-bottom:12px}
+  button{font:inherit;color:var(--text);background:#3a312a;border:1px solid #4a3f36;border-radius:12px;padding:12px;cursor:pointer;touch-action:manipulation}
+  button:active{transform:scale(.98)}
+  button:disabled{opacity:.4;cursor:default}
+  .big{font-size:19px;font-weight:700;padding:22px 10px}
+  #recBtn{background:var(--rec);border-color:#f06a5a}
+  #recBtn.armed{animation:pulse .6s infinite alternate}
+  #recBtn.od{background:var(--od);border-color:#f0a060}
+  #playBtn.on{background:#2f5a3c;border-color:var(--play)}
+  @keyframes pulse{from{opacity:1}to{opacity:.55}}
+  .row{display:flex;align-items:center;gap:10px;margin:10px 0;flex-wrap:wrap}
+  .row label{min-width:92px;color:var(--muted);font-size:14px}
+  .row input[type=range]{flex:1;min-width:140px;accent-color:var(--accent)}
+  .val{min-width:56px;text-align:right;font-variant-numeric:tabular-nums}
+  select{font:inherit;color:var(--text);background:#3a312a;border:1px solid #4a3f36;border-radius:10px;padding:10px;flex:1}
+  .tempo{display:flex;align-items:center;gap:8px;width:100%}
+  .tempo .bpm{font-size:32px;font-weight:700;min-width:70px;text-align:center;font-variant-numeric:tabular-nums}
+  .tempo button{padding:10px 14px}
+  .toggle{display:flex;align-items:center;gap:8px;font-size:15px;color:var(--text)}
+  .toggle input{width:20px;height:20px;accent-color:var(--accent)}
+  .layer{display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--line)}
+  .layer:first-child{border-top:none}
+  .layer .name{min-width:64px;font-weight:600}
+  .layer input[type=range]{flex:1;accent-color:var(--accent)}
+  .layer button{padding:8px 10px;font-size:14px}
+  .layer button.muted{background:#5a2b25}
+  .empty{color:var(--muted);font-size:14px}
+  .btnrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .btnrow button{flex:1;font-size:14px}
+  .meter{flex:1;height:10px;border-radius:5px;background:#3a312a;overflow:hidden}
+  .meter > div{height:100%;width:0;background:linear-gradient(90deg,var(--play),var(--accent) 70%,var(--rec))}
+  #msg{font-size:14px;color:#ffd08a;min-height:0;margin:0 0 10px}
+  #msg:empty{display:none}
+  details summary{cursor:pointer;color:var(--muted);font-size:13px;text-transform:uppercase;letter-spacing:1.2px;font-weight:600}
+  .tips{color:var(--muted);font-size:13px;line-height:1.5}
+  .tips b{color:var(--text)}
+  a.dl{color:var(--accent)}
+</style>
+</head>
+<body>
+<main>
+  <h1>Guitar Looper</h1>
+  <div class="sub">Record loops over a drum backing, then play along. Use headphones so the drums don't get into the mic.</div>
+
+  <div id="msg"></div>
+
+  <div class="card">
+    <div id="status">Tap Record to start</div>
+    <div id="substatus">You'll get a one-bar count-in first</div>
+    <div class="beats" id="beats"></div>
+    <div class="progress" id="progress"><div></div></div>
+  </div>
+
+  <div class="transport">
+    <button id="recBtn" class="big">● Record</button>
+    <button id="playBtn" class="big">▶ Play</button>
+    <button id="undoBtn" class="big" disabled>↶ Undo</button>
+  </div>
+
+  <div class="card">
+    <h2>Drums</h2>
+    <div class="row"><select id="pattern"></select></div>
+    <div class="row">
+      <div class="tempo">
+        <button id="bpmDown">−</button>
+        <div class="bpm" id="bpmVal">90</div>
+        <button id="bpmUp">+</button>
+        <button id="tapBtn" style="flex:1">Tap tempo</button>
+      </div>
+    </div>
+    <div class="row"><label>Tempo</label><input type="range" id="bpm" min="50" max="200" value="90"></div>
+    <div class="row"><label>Swing</label><input type="range" id="swing" min="0" max="100" value="0"><span class="val" id="swingVal">0%</span></div>
+    <div class="row"><label>Drum volume</label><input type="range" id="drumVol" min="0" max="100" value="80"><span class="val" id="drumVolVal">80%</span></div>
+    <div class="row"><span class="toggle"><input type="checkbox" id="countIn" checked> <label for="countIn" style="min-width:0;color:var(--text)">One-bar count-in</label></span></div>
+    <div id="lockNote" class="tips" style="display:none">Tempo and loop length are locked while you have loops. Use Clear all to change them.</div>
+  </div>
+
+  <div class="card">
+    <h2>Loop</h2>
+    <div class="row"><label>Loop length</label>
+      <select id="bars">
+        <option value="1">1 bar</option><option value="2" selected>2 bars</option>
+        <option value="4">4 bars</option><option value="8">8 bars</option>
+      </select>
+    </div>
+    <div class="row"><span class="toggle"><input type="checkbox" id="keep"> <label for="keep" style="min-width:0;color:var(--text)">Keep overdubbing (record every pass until you press again)</label></span></div>
+    <div id="layers"><div class="empty">No layers yet.</div></div>
+    <div class="btnrow">
+      <button id="clearBtn" disabled>Clear all</button>
+      <button id="exportBtn" disabled>Save loop (WAV)</button>
+      <button id="exportDrumsBtn" disabled>Save loop + drums</button>
+    </div>
+    <div id="dlArea" class="tips" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card">
+    <details id="setup">
+      <summary>Mic &amp; timing setup</summary>
+      <div class="row"><label>Input level</label><div class="meter" id="meter"><div></div></div></div>
+      <div class="row"><label>Input gain</label><input type="range" id="inGain" min="0" max="400" value="100"><span class="val" id="inGainVal">100%</span></div>
+      <div class="row"><label>Latency fix</label><input type="range" id="latency" min="0" max="400" value="0"><span class="val" id="latencyVal">0 ms</span></div>
+      <div class="btnrow"><button id="calBtn">Auto-calibrate latency</button></div>
+      <div class="tips" style="margin-top:6px">To auto-calibrate, unplug your headphones and turn the volume up. You'll hear six clicks, and the looper times how long they take to come back through the mic. If your loops still sound late compared with the drums, nudge the slider up. If they sound early, nudge it down.</div>
+      <div class="row"><span class="toggle"><input type="checkbox" id="monitor"> <label for="monitor" style="min-width:0;color:var(--text)">Hear mic through headphones (for a pickup or interface)</label></span></div>
+      <div class="tips">
+        <b>Keys / pedal:</b> Space, Enter, → or Page Down = Record/Overdub · P = Play/Stop · ←, Page Up or Backspace = Undo. Most Bluetooth page-turner pedals work as a foot switch.<br>
+        <b>Mic:</b> point it at the guitar near where the neck meets the body, about 30 cm away. Keep the level meter below the red.
+      </div>
+    </details>
+  </div>
+</main>
+
+<script>
+// ---------- patterns (16th-note grid; x = hit, o = soft) ----------
+const PATTERNS = {
+  rock:    {name:'Rock', beats:4, v:{k:'x.......x.x.....', s:'....x.......x...', h:'x.x.x.x.x.x.x.x.'}},
+  folk:    {name:'Folk (rim + shaker)', beats:4, v:{k:'x.......x.......', r:'....x.......x...', sh:'xoxoxoxoxoxoxoxo'}},
+  shuffle: {name:'Shuffle / blues', beats:4, swing:100, v:{k:'x.......x.......', s:'....x.......x...', h:'x.x.x.x.x.x.x.x.'}},
+  half:    {name:'Half-time ballad', beats:4, v:{k:'x.........x.....', s:'........x.......', h:'x.x.x.x.x.x.x.x.'}},
+  pop:     {name:'Pop / four-on-the-floor', beats:4, v:{k:'x...x...x...x...', s:'....x.......x...', h:'..x...x...x...x.'}},
+  bossa:   {name:'Bossa nova', beats:4, v:{k:'x..xx..xx..xx..x', r:'x..x..x...x..x..', h:'oooooooooooooooo'}},
+  waltz:   {name:'Waltz 3/4', beats:3, v:{k:'x...........', s:'....o...o...', h:'x.x.x.x.x.x.'}},
+  metro4:  {name:'Metronome 4/4', beats:4, metro:true},
+  metro3:  {name:'Metronome 3/4', beats:3, metro:true},
+  off:     {name:'No drums (click count-in only)', beats:4, v:{}},
+};
+
+// ---------- settings ----------
+const S = {bpm:90, pattern:'rock', swing:0, drumVol:0.8, bars:2, countIn:true, keep:false, latency:null, inGain:1, monitor:false};
+try{ Object.assign(S, JSON.parse(localStorage.getItem('looperSettings')||'{}')); }catch(e){}
+function save(){ try{ localStorage.setItem('looperSettings', JSON.stringify(S)); }catch(e){} }
+
+// ---------- audio state ----------
+let ctx, master, drumBus, loopBus, inputGain, monitorGain, noiseBuf, recNode;
+let running=false, barTime=0, nextStepTime=0, step=0, schedTimer=null, countInEnd=0;
+let L=0, origin=0, layers=[], pending=null, cal=null, meterLevel=0;
+
+const beatDur=()=>60/S.bpm, beats=()=>PATTERNS[S.pattern].beats, barDur=()=>beats()*beatDur();
+const stepDur=()=>beatDur()/4, stepsPerBar=()=>beats()*4;
+const mod=(a,b)=>((a%b)+b)%b;
+const $=id=>document.getElementById(id);
+function msg(t){ $('msg').textContent=t||''; }
+
+const WORKLET = `class RecTap extends AudioWorkletProcessor{
+  constructor(){super();this.buf=new Float32Array(2048);this.n=0;this.f0=0;}
+  process(inputs){const ch=inputs[0]&&inputs[0][0];
+    if(ch){ if(this.n===0)this.f0=currentFrame; this.buf.set(ch,this.n); this.n+=ch.length;
+      if(this.n>=2048){this.port.postMessage({frame:this.f0,data:this.buf.slice(0,this.n)});this.n=0;} }
+    return true;}}
+registerProcessor('rec-tap',RecTap);`;
+
+async function initAudio(){
+  if(ctx){ if(ctx.state!=='running') await ctx.resume(); return true; }
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    msg('This browser won\'t give the page microphone access. Open it in Chrome, Edge or Firefox on a computer, or serve it over https.'); return false;
+  }
+  let stream;
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
+  }catch(e){ msg('Microphone access was blocked. Allow the mic for this page and try again.'); return false; }
+  ctx = new (window.AudioContext||window.webkitAudioContext)({latencyHint:'interactive'});
+  master=ctx.createGain(); master.connect(ctx.destination);
+  drumBus=ctx.createGain(); drumBus.gain.value=S.drumVol; drumBus.connect(master);
+  loopBus=ctx.createGain(); loopBus.connect(master);
+  noiseBuf=makeNoise(ctx);
+  const src=ctx.createMediaStreamSource(stream);
+  inputGain=ctx.createGain(); inputGain.gain.value=S.inGain; src.connect(inputGain);
+  monitorGain=ctx.createGain(); monitorGain.gain.value=S.monitor?1:0; inputGain.connect(monitorGain); monitorGain.connect(master);
+  try{
+    const url=URL.createObjectURL(new Blob([WORKLET],{type:'application/javascript'}));
+    await ctx.audioWorklet.addModule(url);
+    recNode=new AudioWorkletNode(ctx,'rec-tap');
+    recNode.port.onmessage=e=>onChunk(e.data.frame,e.data.data);
+  }catch(e){
+    const N=2048; recNode=ctx.createScriptProcessor(N,1,1);
+    recNode.onaudioprocess=ev=>{
+      const f=Math.round((ev.playbackTime-N/ctx.sampleRate)*ctx.sampleRate);
+      onChunk(f,new Float32Array(ev.inputBuffer.getChannelData(0)));
+    };
+  }
+  const sink=ctx.createGain(); sink.gain.value=0;
+  inputGain.connect(recNode); recNode.connect(sink); sink.connect(ctx.destination);
+  if(S.latency==null){ S.latency=Math.round(((ctx.baseLatency||0)+(ctx.outputLatency||0))*1000+15); save(); }
+  syncUI();
+  msg('');
+  return true;
+}
+
+// ---------- drum voices ----------
+function makeNoise(c){ const b=c.createBuffer(1,c.sampleRate,c.sampleRate), d=b.getChannelData(0); for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1; return b; }
+function playVoice(c,out,nb,type,t,v){
+  const g=c.createGain(); g.connect(out);
+  const noise=()=>{const s=c.createBufferSource(); s.buffer=nb; return s;};
+  const filt=(type,f,q)=>{const x=c.createBiquadFilter(); x.type=type; x.frequency.value=f; if(q)x.Q.value=q; return x;};
+  if(type==='k'){
+    const o=c.createOscillator(); o.frequency.setValueAtTime(150,t); o.frequency.exponentialRampToValueAtTime(42,t+0.13);
+    g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(v,t+0.004); g.gain.exponentialRampToValueAtTime(0.001,t+0.4);
+    o.connect(g); o.start(t); o.stop(t+0.42);
+  } else if(type==='s'){
+    const n=noise(), f=filt('highpass',1100); n.connect(f); f.connect(g);
+    g.gain.setValueAtTime(0.5*v,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.2); n.start(t,Math.random()*0.5); n.stop(t+0.22);
+    const o=c.createOscillator(), g2=c.createGain(); o.type='triangle';
+    o.frequency.setValueAtTime(200,t); o.frequency.exponentialRampToValueAtTime(140,t+0.08);
+    g2.gain.setValueAtTime(0.45*v,t); g2.gain.exponentialRampToValueAtTime(0.001,t+0.1);
+    o.connect(g2); g2.connect(out); o.start(t); o.stop(t+0.12);
+  } else if(type==='h'){
+    const n=noise(), f=filt('highpass',7000); n.connect(f); f.connect(g);
+    g.gain.setValueAtTime(0.2*v,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.05); n.start(t,Math.random()*0.5); n.stop(t+0.06);
+  } else if(type==='sh'){
+    const n=noise(), f=filt('bandpass',5500,1); n.connect(f); f.connect(g);
+    g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(0.18*v,t+0.015); g.gain.exponentialRampToValueAtTime(0.001,t+0.09);
+    n.start(t,Math.random()*0.5); n.stop(t+0.1);
+  } else if(type==='r'){
+    const n=noise(), f=filt('bandpass',1900,5); n.connect(f); f.connect(g);
+    g.gain.setValueAtTime(0.9*v,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.05); n.start(t,Math.random()*0.5); n.stop(t+0.06);
+    const o=c.createOscillator(), g2=c.createGain(); o.frequency.value=850;
+    g2.gain.setValueAtTime(0.3*v,t); g2.gain.exponentialRampToValueAtTime(0.001,t+0.03); o.connect(g2); g2.connect(out); o.start(t); o.stop(t+0.04);
+  } else if(type==='click'||type==='clickA'){
+    const o=c.createOscillator(); o.frequency.value=type==='clickA'?1600:1000;
+    g.gain.setValueAtTime(0.5*v,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.04); o.connect(g); o.start(t); o.stop(t+0.05);
+  } else if(type==='calclick'){
+    const o=c.createOscillator(); o.type='square'; o.frequency.value=2000;
+    g.gain.setValueAtTime(0.8,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.015); o.connect(g); o.start(t); o.stop(t+0.02);
+  }
+}
+function stepHits(i, inCount){
+  const P=PATTERNS[S.pattern], hits=[];
+  if(P.metro || (S.pattern==='off' && inCount)){ if(i%4===0) hits.push([i===0?'clickA':'click',1,0]); return hits; }
+  const sw=(i%4===2)? (S.swing/100)*0.667*stepDur() : 0;
+  for(const k in P.v){ const ch=P.v[k][i]; if(ch && ch!=='.') hits.push([k, ch==='o'?0.45:1, sw]); }
+  return hits;
+}
+
+// ---------- transport ----------
+function scheduler(){
+  const ahead=ctx.currentTime+0.15;
+  while(nextStepTime<ahead){
+    if(step===0) barTime=nextStepTime;
+    const inCount = nextStepTime < countInEnd-1e-4;
+    for(const [k,v,sw] of stepHits(step,inCount)) playVoice(ctx,drumBus,noiseBuf,k,nextStepTime+sw,v);
+    nextStepTime+=stepDur(); step=(step+1)%stepsPerBar();
+  }
+}
+function startTransport(when){
+  running=true; nextStepTime=when; barTime=when; step=0;
+  clearInterval(schedTimer); schedTimer=setInterval(scheduler,25); scheduler();
+  requestWake();
+}
+function stopAll(){
+  running=false; clearInterval(schedTimer); countInEnd=0;
+  for(const l of layers){ try{l.src&&l.src.stop();}catch(e){} l.src=null; }
+  if(pending){ if(pending.started) finishRec(pending,true); else pending=null; }
+  releaseWake(); syncUI();
+}
+function nextBar(t){ const bd=barDur(); let b=barTime; while(b<t) b+=bd; while(b-bd>=t) b-=bd; return b; }
+function startLayer(l,when){
+  const s=ctx.createBufferSource(); s.buffer=l.buf; s.loop=true; s.connect(l.gain);
+  s.start(when, mod(when-origin, l.buf.duration)); l.src=s;
+}
+
+// ---------- recording ----------
+function arm(start, first){
+  pending={start, first:!!first, started:false, buf:new Float32Array(Math.round(L*ctx.sampleRate))};
+  syncUI();
+}
+function onChunk(frame,data){
+  let pk=0; for(let i=0;i<data.length;i+=4){const a=Math.abs(data[i]); if(a>pk)pk=a;}
+  meterLevel=Math.max(pk,meterLevel*0.92);
+  if(cal) calFeed(frame,data);
+  feedRec(frame,data);
+}
+function feedRec(frame,data){
+  const p=pending; if(!p) return;
+  const sr=ctx.sampleRate, ws=Math.round((p.start+S.latency/1000)*sr), we=ws+p.buf.length;
+  const cs=frame, ce=frame+data.length;
+  if(ce<=ws) return;
+  if(!p.started){ p.started=true; syncUI(); }
+  const a=Math.max(cs,ws), b=Math.min(ce,we);
+  if(b>a) p.buf.set(data.subarray(a-cs,b-cs), a-ws);
+  if(ce>=we){ finishRec(p,false); if(pending && pending!==p) feedRec(frame,data); }
+}
+function finishRec(p,stopping){
+  pending=null;
+  const d=p.buf, fade=Math.round(ctx.sampleRate*0.002);
+  for(let i=0;i<fade;i++){ const g=i/fade; d[i]*=g; d[d.length-1-i]*=g; }
+  const buf=ctx.createBuffer(1,d.length,ctx.sampleRate); buf.copyToChannel(d,0);
+  const g=ctx.createGain(); g.connect(loopBus);
+  const l={buf,gain:g,vol:1,muted:false,src:null}; layers.push(l);
+  if(running) startLayer(l, ctx.currentTime+0.02);
+  if(S.keep && !stopping && running) arm(p.start+L);
+  renderLayers(); syncUI();
+}
+
+async function onRecord(){
+  if(!(await initAudio())) return;
+  if(cal) return;
+  if(pending){
+    if(pending.started) finishRec(pending,true);
+    else { pending=null; if(!layers.length){ L=0; } }
+    syncUI(); return;
+  }
+  const now=ctx.currentTime;
+  let recStart;
+  if(!running){
+    const when=now+0.1, ci=S.countIn?barDur():0;
+    startTransport(when); countInEnd=when+ci; recStart=when+ci;
+    if(layers.length){ origin=recStart; for(const l of layers) startLayer(l,origin); }
+  } else if(!layers.length){
+    recStart=nextBar(now+0.05);
+  } else {
+    recStart=origin+Math.ceil((now+0.03-origin)/L)*L;
+  }
+  if(!layers.length){ L=S.bars*barDur(); origin=recStart; }
+  arm(recStart, !layers.length);
+}
+async function onPlay(){
+  if(!(await initAudio())) return;
+  if(cal) return;
+  if(running){ stopAll(); return; }
+  const when=ctx.currentTime+0.1;
+  startTransport(when);
+  if(layers.length){ origin=when; for(const l of layers) startLayer(l,when); }
+  syncUI();
+}
+function undo(){
+  if(pending && !pending.started){ pending=null; syncUI(); return; }
+  const l=layers.pop(); if(!l) return;
+  try{l.src&&l.src.stop();}catch(e){} l.gain.disconnect();
+  if(!layers.length && !pending) L=0;
+  renderLayers(); syncUI();
+}
+function clearAll(){
+  if(pending){ pending=null; }
+  while(layers.length){ const l=layers.pop(); try{l.src&&l.src.stop();}catch(e){} l.gain.disconnect(); }
+  L=0; renderLayers(); syncUI(); $('dlArea').innerHTML='';
+}
+
+// ---------- latency calibration ----------
+async function calibrate(){
+  if(!(await initAudio())) return;
+  if(running) stopAll();
+  const sr=ctx.sampleRate, t0=ctx.currentTime+0.1, dur=3.4;
+  const clicks=[]; for(let i=0;i<6;i++){ const t=t0+0.6+i*0.45; clicks.push(t); playVoice(ctx,master,noiseBuf,'calclick',t,1); }
+  cal={f0:Math.round(t0*sr), buf:new Float32Array(Math.round(dur*sr))};
+  $('calBtn').disabled=true; $('calBtn').textContent='Listening…';
+  await new Promise(r=>setTimeout(r,(dur+0.4)*1000));
+  const b=cal.buf; cal=null;
+  let floor=0; for(let i=0;i<Math.round(0.5*sr);i++) floor=Math.max(floor,Math.abs(b[i]));
+  const th=Math.max(0.03,floor*4), delays=[];
+  for(const tc of clicks){
+    const s=Math.round((tc-t0)*sr), e=Math.min(b.length,s+Math.round(0.4*sr));
+    for(let i=s;i<e;i++){ if(Math.abs(b[i])>th){ delays.push((i-s)/sr); break; } }
+  }
+  $('calBtn').disabled=false; $('calBtn').textContent='Auto-calibrate latency';
+  if(delays.length<3){ msg('The mic didn\'t pick up the clicks clearly. Unplug your headphones, turn the volume up and try again, or set the slider by ear.'); return; }
+  delays.sort((a,b)=>a-b);
+  S.latency=Math.round(delays[Math.floor(delays.length/2)]*1000); save(); syncUI();
+  msg('Latency set to '+S.latency+' ms. Plug your headphones back in before recording.');
+}
+function calFeed(frame,data){
+  const off=frame-cal.f0;
+  for(let i=0;i<data.length;i++){ const j=off+i; if(j>=0 && j<cal.buf.length) cal.buf[j]=data[i]; }
+}
+
+// ---------- export ----------
+async function exportLoop(withDrums){
+  if(!layers.length) return;
+  const sr=ctx.sampleRate, len=layers[0].buf.length;
+  const oc=new OfflineAudioContext(1,len,sr);
+  for(const l of layers){ if(l.muted) continue; const s=oc.createBufferSource(), g=oc.createGain(); s.buffer=l.buf; g.gain.value=l.vol; s.connect(g); g.connect(oc.destination); s.start(0); }
+  if(withDrums){
+    const db=oc.createGain(); db.gain.value=S.drumVol; db.connect(oc.destination);
+    const nb=makeNoise(oc), n=Math.round(L/stepDur());
+    for(let i=0;i<n;i++) for(const [k,v,sw] of stepHits(i%stepsPerBar(),false)){ const t=i*stepDur()+sw; if(t<L) playVoice(oc,db,nb,k,t,v); }
+  }
+  const out=(await oc.startRendering()).getChannelData(0);
+  let pk=0; for(const x of out) pk=Math.max(pk,Math.abs(x));
+  const norm=pk>0.98?0.98/pk:1;
+  const blob=wav(out,sr,norm), url=URL.createObjectURL(blob);
+  const name='loop-'+S.bpm+'bpm'+(withDrums?'-drums':'')+'.wav';
+  const a=document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove();
+  $('dlArea').innerHTML='Saved <a class="dl" href="'+url+'" download="'+name+'">'+name+'</a>. Tap the link if the download didn\'t start.';
+}
+function wav(d,sr,norm){
+  const b=new ArrayBuffer(44+d.length*2), v=new DataView(b);
+  const w=(o,s)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i));};
+  w(0,'RIFF'); v.setUint32(4,36+d.length*2,true); w(8,'WAVE'); w(12,'fmt ');
+  v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true); v.setUint32(24,sr,true);
+  v.setUint32(28,sr*2,true); v.setUint16(32,2,true); v.setUint16(34,16,true); w(36,'data'); v.setUint32(40,d.length*2,true);
+  for(let i=0;i<d.length;i++){ const x=Math.max(-1,Math.min(1,d[i]*norm)); v.setInt16(44+i*2,x<0?x*0x8000:x*0x7fff,true); }
+  return new Blob([b],{type:'audio/wav'});
+}
+
+// ---------- wake lock ----------
+let wake=null;
+async function requestWake(){ try{ if(navigator.wakeLock && !wake) wake=await navigator.wakeLock.request('screen'); }catch(e){} }
+function releaseWake(){ try{ wake&&wake.release(); }catch(e){} wake=null; }
+
+// ---------- UI ----------
+const sel=$('pattern');
+for(const k in PATTERNS){ const o=document.createElement('option'); o.value=k; o.textContent=PATTERNS[k].name; sel.appendChild(o); }
+
+function locked(){ return layers.length>0 || !!pending; }
+function syncUI(){
+  sel.value=S.pattern; $('bpm').value=S.bpm; $('bpmVal').textContent=S.bpm;
+  $('swing').value=S.swing; $('swingVal').textContent=S.swing+'%';
+  $('drumVol').value=Math.round(S.drumVol*100); $('drumVolVal').textContent=Math.round(S.drumVol*100)+'%';
+  $('countIn').checked=S.countIn; $('keep').checked=S.keep; $('bars').value=S.bars; $('monitor').checked=S.monitor;
+  $('inGain').value=Math.round(S.inGain*100); $('inGainVal').textContent=Math.round(S.inGain*100)+'%';
+  $('latency').value=S.latency||0; $('latencyVal').textContent=(S.latency||0)+' ms';
+  const lk=locked();
+  for(const id of ['bpm','bpmDown','bpmUp','tapBtn','bars']) $(id).disabled=lk;
+  for(const o of sel.options) o.disabled = lk && PATTERNS[o.value].beats!==beats();
+  $('lockNote').style.display=lk?'block':'none';
+  $('undoBtn').disabled=!layers.length && !(pending && !pending.started);
+  $('clearBtn').disabled=!layers.length;
+  $('exportBtn').disabled=$('exportDrumsBtn').disabled=!layers.length;
+  $('playBtn').textContent=running?'■ Stop':'▶ Play'; $('playBtn').classList.toggle('on',running);
+  const rb=$('recBtn');
+  rb.classList.toggle('armed', !!pending && !pending.started);
+  rb.classList.toggle('od', layers.length>0);
+  rb.textContent = pending ? (pending.started ? (layers.length||!pending.first?'■ Stop overdub':'■ Stop recording') : 'Cancel') : (layers.length?'● Overdub':'● Record');
+  if(pending && pending.started && pending.first) rb.textContent='Recording…';
+  renderBeats();
+}
+let beatEls=[];
+function renderBeats(){
+  const n=beats(); if(beatEls.length===n) return;
+  const c=$('beats'); c.innerHTML=''; beatEls=[];
+  for(let i=0;i<n;i++){ const d=document.createElement('div'); d.className='beat'+(i===0?' first':''); c.appendChild(d); beatEls.push(d); }
+}
+function renderLayers(){
+  const c=$('layers'); c.innerHTML='';
+  if(!layers.length){ c.innerHTML='<div class="empty">No layers yet.</div>'; return; }
+  layers.forEach((l,i)=>{
+    const row=document.createElement('div'); row.className='layer';
+    row.innerHTML='<span class="name">Layer '+(i+1)+'</span>';
+    const r=document.createElement('input'); r.type='range'; r.min=0; r.max=150; r.value=Math.round(l.vol*100);
+    r.oninput=()=>{ l.vol=r.value/100; if(!l.muted) l.gain.gain.value=l.vol; };
+    const m=document.createElement('button'); m.textContent=l.muted?'Muted':'Mute'; m.classList.toggle('muted',l.muted);
+    m.onclick=()=>{ l.muted=!l.muted; l.gain.gain.value=l.muted?0:l.vol; m.textContent=l.muted?'Muted':'Mute'; m.classList.toggle('muted',l.muted); m.blur(); };
+    row.appendChild(r); row.appendChild(m); c.appendChild(row);
+  });
+}
+function frame(){
+  requestAnimationFrame(frame);
+  $('meter').firstElementChild.style.width=Math.min(100,meterLevel*100)+'%';
+  meterLevel*=0.97;
+  const st=$('status'), sub=$('substatus'), pb=$('progress');
+  if(!ctx){ return; }
+  const now=ctx.currentTime-(ctx.outputLatency||0);
+  if(running && now>=0){
+    const bd=barDur(), pos=mod(now-barTime,bd), b=Math.floor(pos/beatDur());
+    beatEls.forEach((e,i)=>e.classList.toggle('on', i===b && pos-b*beatDur()<beatDur()*0.5 && now>=barTime-bd));
+  } else beatEls.forEach(e=>e.classList.remove('on'));
+  let prog=0;
+  if(L && running && now>=origin) prog=mod(now-origin,L)/L;
+  pb.firstElementChild.style.width=(prog*100)+'%';
+  pb.classList.toggle('rec', !!pending && pending.started);
+  if(cal){ st.textContent='Calibrating…'; sub.textContent='Stay quiet for a few seconds'; return; }
+  if(pending){
+    if(now<pending.start){
+      const bl=Math.ceil((pending.start-now)/beatDur());
+      st.textContent = now<countInEnd ? 'Count-in… '+bl : 'Get ready… '+bl;
+      sub.textContent = layers.length ? 'Overdub starts at the top of the loop' : 'Recording starts on the next bar';
+    } else {
+      st.textContent='● Recording layer '+(layers.length+1);
+      sub.textContent=Math.round(prog*100)+'% through the loop'+(S.keep?' · keep overdubbing is on':'');
+    }
+  } else if(running){
+    st.textContent = layers.length ? '▶ Playing '+layers.length+' layer'+(layers.length>1?'s':'') : '▶ Drums playing';
+    sub.textContent = layers.length ? 'Press Overdub to add a layer' : 'Press Record to start a loop on the next bar';
+  } else {
+    st.textContent = layers.length ? 'Stopped' : 'Tap Record to start';
+    sub.textContent = layers.length ? 'Press Play to hear your loop' : (S.countIn?'You\'ll get a one-bar count-in first':'Recording starts straight away');
+  }
+}
+
+// ---------- events ----------
+function btn(id,fn){ $(id).addEventListener('click',e=>{ e.currentTarget.blur(); fn(); }); }
+btn('recBtn',onRecord); btn('playBtn',onPlay); btn('undoBtn',undo); btn('clearBtn',clearAll);
+btn('exportBtn',()=>exportLoop(false)); btn('exportDrumsBtn',()=>exportLoop(true)); btn('calBtn',calibrate);
+btn('bpmDown',()=>{ setBpm(S.bpm-1); }); btn('bpmUp',()=>{ setBpm(S.bpm+1); });
+function setBpm(b){ if(locked()) return; S.bpm=Math.max(50,Math.min(200,Math.round(b))); save(); syncUI(); }
+$('bpm').oninput=e=>setBpm(+e.target.value);
+let taps=[];
+btn('tapBtn',()=>{ const t=performance.now(); taps=taps.filter(x=>t-x<2500); taps.push(t);
+  if(taps.length>=2){ const iv=(taps[taps.length-1]-taps[0])/(taps.length-1); setBpm(60000/iv); } if(taps.length>6) taps.shift(); });
+sel.onchange=e=>{ S.pattern=e.target.value; S.swing=PATTERNS[S.pattern].swing||0; if(running) step=step%stepsPerBar(); save(); syncUI(); };
+$('swing').oninput=e=>{ S.swing=+e.target.value; save(); syncUI(); };
+$('drumVol').oninput=e=>{ S.drumVol=e.target.value/100; if(drumBus) drumBus.gain.value=S.drumVol; save(); syncUI(); };
+$('countIn').onchange=e=>{ S.countIn=e.target.checked; save(); };
+$('keep').onchange=e=>{ S.keep=e.target.checked; save(); };
+$('bars').onchange=e=>{ S.bars=+e.target.value; save(); };
+$('inGain').oninput=e=>{ S.inGain=e.target.value/100; if(inputGain) inputGain.gain.value=S.inGain; save(); syncUI(); };
+$('latency').oninput=e=>{ S.latency=+e.target.value; save(); syncUI(); };
+$('monitor').onchange=e=>{ S.monitor=e.target.checked; if(monitorGain) monitorGain.gain.value=S.monitor?1:0; save(); };
+document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='SELECT'||(e.target.tagName==='INPUT'&&e.target.type!=='checkbox'&&e.target.type!=='range')) return;
+  const k=e.key;
+  if([' ','Enter','ArrowRight','PageDown'].includes(k)){ e.preventDefault(); if(!e.repeat) onRecord(); }
+  else if(['ArrowLeft','PageUp','Backspace'].includes(k)){ e.preventDefault(); if(!e.repeat) undo(); }
+  else if(k==='p'||k==='P'){ e.preventDefault(); onPlay(); }
+});
+document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible' && running) requestWake(); });
+
+if(S.latency==null) S.latency=0;
+const savedLatency=localStorage.getItem && (()=>{try{return JSON.parse(localStorage.getItem('looperSettings')||'{}').latency}catch(e){return null}})();
+if(savedLatency==null) S.latency=null;
+syncUI(); renderLayers(); requestAnimationFrame(frame);
+</script>
+</body>
+</html>
