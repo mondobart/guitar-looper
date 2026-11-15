@@ -46,7 +46,12 @@
   .toggle{display:flex;align-items:center;gap:8px;font-size:15px;color:var(--text)}
   .toggle input{width:20px;height:20px;accent-color:var(--accent)}
   .layer{display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--line)}
-  .layer:first-child{border-top:none}
+  .lwrap{border-top:1px solid var(--line);padding-bottom:6px}
+  .lwrap:first-child{border-top:none}
+  .lwrap .layer{border-top:none}
+  .fxrow{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .fxcell{display:flex;flex-direction:column;font-size:12px;color:var(--muted);gap:2px}
+  .fxcell input{width:100%;accent-color:var(--accent)}
   .layer .name{min-width:64px;font-weight:600}
   .layer input[type=range]{flex:1;accent-color:var(--accent)}
   .layer button{padding:8px 10px;font-size:14px}
@@ -127,6 +132,20 @@
   </div>
 
   <div class="card">
+    <h2>Effects</h2>
+    <div class="tips" style="margin-bottom:6px">Set echo, sustain and reverb for each layer using the sliders under it in the Loop section. They're applied while the loop plays, so you can change them any time.</div>
+    <div class="row"><label>Echo timing</label>
+      <select id="echoDiv">
+        <option value="1">1 beat</option>
+        <option value="0.75">Dotted eighth (the classic)</option>
+        <option value="0.5">Eighth note</option>
+        <option value="0.3333">Triplet</option>
+      </select>
+    </div>
+    <div class="row"><label>Echo repeats</label><input type="range" id="echoFb" min="0" max="85" value="35"><span class="val" id="echoFbVal">35%</span></div>
+  </div>
+
+  <div class="card">
     <details id="setup">
       <summary>Mic &amp; timing setup</summary>
       <div class="row"><label>Input level</label><div class="meter" id="meter"><div></div></div></div>
@@ -163,12 +182,12 @@ const PATTERNS = {
 };
 
 // ---------- settings ----------
-const S = {bpm:90, pattern:'rock', swing:0, drumVol:0.8, bars:2, countIn:true, keep:false, latency:null, inGain:1, monitor:false, autoLevel:true, agc:false};
+const S = {bpm:90, pattern:'rock', swing:0, drumVol:0.8, bars:2, countIn:true, keep:false, latency:null, inGain:1, monitor:false, autoLevel:true, agc:false, echoDiv:'0.75', echoFb:0.35};
 try{ Object.assign(S, JSON.parse(localStorage.getItem('looperSettings')||'{}')); }catch(e){}
 function save(){ try{ localStorage.setItem('looperSettings', JSON.stringify(S)); }catch(e){} }
 
 // ---------- audio state ----------
-let ctx, master, drumBus, loopBus, inputGain, monitorGain, noiseBuf, recNode;
+let fx, limiter, ctx, master, drumBus, loopBus, inputGain, monitorGain, noiseBuf, recNode;
 let running=false, barTime=0, nextStepTime=0, step=0, schedTimer=null, countInEnd=0;
 let L=0, origin=0, layers=[], pending=null, cal=null, meterLevel=0;
 
@@ -194,7 +213,10 @@ async function initAudio(){
   ctx = new (window.AudioContext||window.webkitAudioContext)({latencyHint:'interactive'});
   inputGain=ctx.createGain(); inputGain.gain.value=S.inGain;
   if(!(await openMic())){ try{ctx.close();}catch(e){} ctx=null; return false; }
-  master=ctx.createGain(); master.connect(ctx.destination);
+  master=ctx.createGain();
+  limiter=ctx.createDynamicsCompressor(); limiter.threshold.value=-2; limiter.knee.value=0; limiter.ratio.value=20; limiter.attack.value=0.002; limiter.release.value=0.15;
+  master.connect(limiter); limiter.connect(ctx.destination);
+  fx=buildFx(ctx,master);
   drumBus=ctx.createGain(); drumBus.gain.value=S.drumVol; drumBus.connect(master);
   loopBus=ctx.createGain(); loopBus.connect(master);
   noiseBuf=makeNoise(ctx);
@@ -230,6 +252,35 @@ async function openMic(){
   micStream=stream; micSrc=ctx.createMediaStreamSource(stream); micSrc.connect(inputGain);
   return true;
 }
+
+// ---------- effects ----------
+const echoTime=()=>beatDur()*parseFloat(S.echoDiv);
+function makeImpulse(c,T){
+  const sr=c.sampleRate, len=Math.round(sr*T), b=c.createBuffer(2,len,sr), pre=Math.round(sr*0.012);
+  for(let ch=0;ch<2;ch++){ const d=b.getChannelData(ch);
+    for(let i=0;i<len;i++){ const t=i/len; d[i]=(Math.random()*2-1)*Math.pow(1-t,3.2)*(i<pre?i/pre:1); } }
+  return b;
+}
+function buildFx(c,out){
+  const echoIn=c.createGain(), delay=c.createDelay(2.5), fb=c.createGain(), lp=c.createBiquadFilter();
+  lp.type='lowpass'; lp.frequency.value=3500; delay.delayTime.value=echoTime(); fb.gain.value=S.echoFb;
+  echoIn.connect(delay); delay.connect(lp); lp.connect(fb); fb.connect(delay); delay.connect(out);
+  const revIn=c.createGain(), cv=c.createConvolver(); cv.buffer=makeImpulse(c,2.6); revIn.connect(cv); cv.connect(out);
+  return {echoIn, revIn, delay, fb};
+}
+function makeChain(c,l,bus){
+  const input=c.createGain(), dry=c.createGain(), comp=c.createDynamicsCompressor(), wet=c.createGain(),
+        out=c.createGain(), es=c.createGain(), rs=c.createGain();
+  comp.threshold.value=-36; comp.knee.value=12; comp.ratio.value=10; comp.attack.value=0.004; comp.release.value=0.35;
+  input.connect(dry); dry.connect(out); input.connect(comp); comp.connect(wet); wet.connect(out);
+  out.connect(bus.loop); out.connect(es); es.connect(bus.echoIn); out.connect(rs); rs.connect(bus.revIn);
+  const ch={input,dry,wet,out,es,rs}; applyFx(ch,l); return ch;
+}
+function applyFx(ch,l){
+  ch.dry.gain.value=1-l.sustain; ch.wet.gain.value=l.sustain*2.5;
+  ch.out.gain.value=l.muted?0:l.vol; ch.es.gain.value=l.echo*0.8; ch.rs.gain.value=l.reverb*0.9;
+}
+function updateEcho(){ if(fx){ fx.delay.delayTime.setTargetAtTime(echoTime(),ctx.currentTime,0.05); fx.fb.gain.value=S.echoFb; } }
 
 // ---------- drum voices ----------
 function makeNoise(c){ const b=c.createBuffer(1,c.sampleRate,c.sampleRate), d=b.getChannelData(0); for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1; return b; }
@@ -299,7 +350,7 @@ function stopAll(){
 }
 function nextBar(t){ const bd=barDur(); let b=barTime; while(b<t) b+=bd; while(b-bd>=t) b-=bd; return b; }
 function startLayer(l,when){
-  const s=ctx.createBufferSource(); s.buffer=l.buf; s.loop=true; s.connect(l.gain);
+  const s=ctx.createBufferSource(); s.buffer=l.buf; s.loop=true; s.connect(l.ch.input);
   s.start(when, mod(when-origin, l.buf.duration)); l.src=s;
 }
 
@@ -331,8 +382,8 @@ function finishRec(p,stopping){
   if(S.autoLevel){ let pk=0; for(let i=0;i<d.length;i++){const a=Math.abs(d[i]); if(a>pk)pk=a;}
     if(pk>0.0005){ const k=Math.min(0.7/pk,30); for(let i=0;i<d.length;i++) d[i]*=k; } }
   const buf=ctx.createBuffer(1,d.length,ctx.sampleRate); buf.copyToChannel(d,0);
-  const g=ctx.createGain(); g.connect(loopBus);
-  const l={buf,gain:g,vol:1,muted:false,src:null}; layers.push(l);
+  const l={buf,vol:1,muted:false,src:null,echo:0,sustain:0,reverb:0};
+  l.ch=makeChain(ctx,l,{loop:loopBus,echoIn:fx.echoIn,revIn:fx.revIn}); layers.push(l);
   if(running) startLayer(l, ctx.currentTime+0.02);
   if(S.keep && !stopping && running) arm(p.start+L);
   renderLayers(); syncUI();
@@ -372,13 +423,13 @@ async function onPlay(){
 function undo(){
   if(pending && !pending.started){ pending=null; syncUI(); return; }
   const l=layers.pop(); if(!l) return;
-  try{l.src&&l.src.stop();}catch(e){} l.gain.disconnect();
+  try{l.src&&l.src.stop();}catch(e){} l.ch.out.disconnect();
   if(!layers.length && !pending) L=0;
   renderLayers(); syncUI();
 }
 function clearAll(){
   if(pending){ pending=null; }
-  while(layers.length){ const l=layers.pop(); try{l.src&&l.src.stop();}catch(e){} l.gain.disconnect(); }
+  while(layers.length){ const l=layers.pop(); try{l.src&&l.src.stop();}catch(e){} l.ch.out.disconnect(); }
   L=0; renderLayers(); syncUI(); $('dlArea').innerHTML='';
 }
 
@@ -434,14 +485,17 @@ function calFeed(frame,data){
 async function exportLoop(withDrums){
   if(!layers.length) return;
   const sr=ctx.sampleRate, len=layers[0].buf.length;
-  const oc=new OfflineAudioContext(1,len,sr);
-  for(const l of layers){ if(l.muted) continue; const s=oc.createBufferSource(), g=oc.createGain(); s.buffer=l.buf; g.gain.value=l.vol; s.connect(g); g.connect(oc.destination); s.start(0); }
+  const oc=new OfflineAudioContext(2,len*2,sr);
+  const bus=buildFx(oc,oc.destination);
+  for(const l of layers){ if(l.muted) continue; const s=oc.createBufferSource(); s.buffer=l.buf; s.loop=true;
+    const ch=makeChain(oc,l,{loop:oc.destination,echoIn:bus.echoIn,revIn:bus.revIn}); s.connect(ch.input); s.start(0); }
   if(withDrums){
     const db=oc.createGain(); db.gain.value=S.drumVol; db.connect(oc.destination);
-    const nb=makeNoise(oc), n=Math.round(L/stepDur());
-    for(let i=0;i<n;i++) for(const [k,v,sw] of stepHits(i%stepsPerBar(),false)){ const t=i*stepDur()+sw; if(t<L) playVoice(oc,db,nb,k,t,v); }
+    const nb=makeNoise(oc), n=Math.round(2*L/stepDur());
+    for(let i=0;i<n;i++) for(const [k,v,sw] of stepHits(i%stepsPerBar(),false)){ const t=i*stepDur()+sw; if(t<2*L) playVoice(oc,db,nb,k,t,v); }
   }
-  const out=(await oc.startRendering()).getChannelData(0);
+  const r=await oc.startRendering(), A=r.getChannelData(0), B=r.getChannelData(1), out=new Float32Array(len);
+  for(let i=0;i<len;i++) out[i]=(A[len+i]+B[len+i])*0.5;
   let pk=0; for(const x of out) pk=Math.max(pk,Math.abs(x));
   const norm=pk>0.98?0.98/pk:1;
   const blob=wav(out,sr,norm), url=URL.createObjectURL(blob);
@@ -473,7 +527,7 @@ function syncUI(){
   sel.value=S.pattern; $('bpm').value=S.bpm; $('bpmVal').textContent=S.bpm;
   $('swing').value=S.swing; $('swingVal').textContent=S.swing+'%';
   $('drumVol').value=Math.round(S.drumVol*100); $('drumVolVal').textContent=Math.round(S.drumVol*100)+'%';
-  $('countIn').checked=S.countIn; $('keep').checked=S.keep; $('bars').value=S.bars; $('monitor').checked=S.monitor; $('autoLevel').checked=S.autoLevel; $('agc').checked=S.agc;
+  $('countIn').checked=S.countIn; $('keep').checked=S.keep; $('bars').value=S.bars; $('monitor').checked=S.monitor; $('autoLevel').checked=S.autoLevel; $('echoDiv').value=S.echoDiv; $('echoFb').value=Math.round(S.echoFb*100); $('echoFbVal').textContent=Math.round(S.echoFb*100)+'%'; $('agc').checked=S.agc;
   $('inGain').value=Math.round(S.inGain*100); $('inGainVal').textContent=Math.round(S.inGain*100)+'%';
   $('latency').value=S.latency||0; $('latencyVal').textContent=(S.latency||0)+' ms'; $('latencyVal2').textContent=(S.latency||0)+' ms';
   const lk=locked();
@@ -501,13 +555,23 @@ function renderLayers(){
   const c=$('layers'); c.innerHTML='';
   if(!layers.length){ c.innerHTML='<div class="empty">No layers yet.</div>'; return; }
   layers.forEach((l,i)=>{
+    const wrap=document.createElement('div'); wrap.className='lwrap';
     const row=document.createElement('div'); row.className='layer';
     row.innerHTML='<span class="name">Layer '+(i+1)+'</span>';
     const r=document.createElement('input'); r.type='range'; r.min=0; r.max=150; r.value=Math.round(l.vol*100);
-    r.oninput=()=>{ l.vol=r.value/100; if(!l.muted) l.gain.gain.value=l.vol; };
+    r.oninput=()=>{ l.vol=r.value/100; applyFx(l.ch,l); };
     const m=document.createElement('button'); m.textContent=l.muted?'Muted':'Mute'; m.classList.toggle('muted',l.muted);
-    m.onclick=()=>{ l.muted=!l.muted; l.gain.gain.value=l.muted?0:l.vol; m.textContent=l.muted?'Muted':'Mute'; m.classList.toggle('muted',l.muted); m.blur(); };
-    row.appendChild(r); row.appendChild(m); c.appendChild(row);
+    m.onclick=()=>{ l.muted=!l.muted; applyFx(l.ch,l); m.textContent=l.muted?'Muted':'Mute'; m.classList.toggle('muted',l.muted); m.blur(); };
+    row.appendChild(r); row.appendChild(m); wrap.appendChild(row);
+    const fxr=document.createElement('div'); fxr.className='fxrow';
+    for(const [key,lab] of [['echo','Echo'],['sustain','Sustain'],['reverb','Reverb']]){
+      const cell=document.createElement('label'); cell.className='fxcell';
+      const t=document.createElement('span'); t.textContent=lab+' '+Math.round(l[key]*100)+'%';
+      const sl=document.createElement('input'); sl.type='range'; sl.min=0; sl.max=100; sl.value=Math.round(l[key]*100);
+      sl.oninput=()=>{ l[key]=sl.value/100; t.textContent=lab+' '+sl.value+'%'; applyFx(l.ch,l); };
+      cell.appendChild(t); cell.appendChild(sl); fxr.appendChild(cell);
+    }
+    wrap.appendChild(fxr); c.appendChild(wrap);
   });
 }
 function frame(){
@@ -550,7 +614,7 @@ btn('recBtn',onRecord); btn('playBtn',onPlay); btn('undoBtn',undo); btn('clearBt
 btn('exportBtn',()=>exportLoop(false)); btn('exportDrumsBtn',()=>exportLoop(true)); btn('calBtn',()=>calibrate(false)); btn('strumBtn',()=>calibrate(true));
 btn('earlyBtn',async()=>{ if(await initAudio()) shiftLayers(10); }); btn('lateBtn',async()=>{ if(await initAudio()) shiftLayers(-10); });
 btn('bpmDown',()=>{ setBpm(S.bpm-1); }); btn('bpmUp',()=>{ setBpm(S.bpm+1); });
-function setBpm(b){ if(locked()) return; S.bpm=Math.max(50,Math.min(200,Math.round(b))); save(); syncUI(); }
+function setBpm(b){ if(locked()) return; S.bpm=Math.max(50,Math.min(200,Math.round(b))); save(); syncUI(); updateEcho(); }
 $('bpm').oninput=e=>setBpm(+e.target.value);
 let taps=[];
 btn('tapBtn',()=>{ const t=performance.now(); taps=taps.filter(x=>t-x<2500); taps.push(t);
@@ -564,6 +628,8 @@ $('bars').onchange=e=>{ S.bars=+e.target.value; save(); };
 $('inGain').oninput=e=>{ S.inGain=e.target.value/100; if(inputGain) inputGain.gain.value=S.inGain; save(); syncUI(); };
 $('latency').oninput=e=>{ S.latency=+e.target.value; save(); syncUI(); };
 $('monitor').onchange=e=>{ S.monitor=e.target.checked; if(monitorGain) monitorGain.gain.value=S.monitor?1:0; save(); };
+$('echoDiv').onchange=e=>{ S.echoDiv=e.target.value; save(); updateEcho(); };
+$('echoFb').oninput=e=>{ S.echoFb=e.target.value/100; save(); syncUI(); updateEcho(); };
 $('autoLevel').onchange=e=>{ S.autoLevel=e.target.checked; save(); };
 $('agc').onchange=async e=>{ S.agc=e.target.checked; save(); if(ctx) await openMic(); };
 document.addEventListener('keydown',e=>{
